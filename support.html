@@ -127,6 +127,20 @@
       content:""; width:20px;height:20px;background:#e9edef;border-radius:9999px;transform:translateX(0);transition:transform .2s;
     }
     .wa-switch input:checked + span::after{ transform:translateX(20px); }
+	.bubble.selected {
+  background-color: #d1e7ff !important;
+  border: 1px solid #007bff !important;
+}
+
+.delete-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: red;
+  font-size: 14px;
+  margin-left: 5px;
+}
+
   </style>
 </head>
 <body class="h-screen w-screen overflow-hidden bg-[#111b21] text-[#e9edef]">
@@ -225,26 +239,51 @@
 
       <!-- CHAT VIEW -->
       <!-- ✅ min-h-0 ensures the inner chat area can scroll -->
-      <section id="chatPane" class="flex flex-1 flex-col min-h-0">
-        <!-- messages -->
-        <!-- ✅ overflow-y-auto added so chat scrolls -->
-        <div id="chat-window" class="flex-1 wa-chat-bg thin-scroll p-6 flex flex-col gap-2 overflow-y-auto"></div>
+      <!-- CHAT VIEW -->
+<section id="chatPane" class="flex flex-1 flex-col min-h-0 relative">
 
-        <!-- composer (always visible when chat pane visible) -->
-        <form id="chatForm" class="subbar px-3 py-3 flex items-center gap-2 hidden">
-          <button type="button" id="emojiBtn" class="icon-btn" title="Emoji">
-            <i class="fa-regular fa-face-smile"></i>
-          </button>
-          <button type="button" id="fileBtn" class="icon-btn" title="Attach">
-            <i class="fa-solid fa-paperclip -rotate-45"></i>
-          </button>
-          <input id="fileInput" type="file" class="hidden" accept="image/*,video/*,application/pdf,.doc,.docx" />
-          <input id="chatInput" type="text" class="input-pill" placeholder="Type a message" />
-          <button type="submit" class="icon-btn" title="Send">
-            <i class="fa-solid fa-paper-plane"></i>
-          </button>
-        </form>
-      </section>
+  <!-- ✅ Floating Delete Toolbar (hidden until messages are selected) -->
+  <!-- ✅ Floating Delete Toolbar -->
+<div id="deleteToolbar"
+     class="absolute top-0 left-0 right-0 z-20 hidden items-center justify-between px-4 py-2 bg-[#202c33] text-white">
+  <div class="flex items-center gap-3">
+    <span id="selectedCount" class="text-sm">0 selected</span>
+  </div>
+
+  <div class="flex items-center gap-2">
+   
+    <button id="deleteSelectedForEveryone"
+            class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-md text-sm font-medium">
+      Delete for Everyone
+    </button>
+	<!-- Toast notifications container -->
+
+  </div>
+  
+</div>
+
+  <!-- ✅ Scrollable messages window -->
+  <div id="chat-window"
+       class="flex-1 wa-chat-bg thin-scroll p-6 flex flex-col gap-2 overflow-y-auto pt-12">
+    <!-- messages dynamically injected here -->
+  </div>
+
+  <!-- ✅ Message input composer -->
+  <form id="chatForm" class="subbar px-3 py-3 flex items-center gap-2 hidden">
+    <button type="button" id="emojiBtn" class="icon-btn" title="Emoji">
+      <i class="fa-regular fa-face-smile"></i>
+    </button>
+    <button type="button" id="fileBtn" class="icon-btn" title="Attach">
+      <i class="fa-solid fa-paperclip -rotate-45"></i>
+    </button>
+    <input id="fileInput" type="file" class="hidden" accept="image/*,video/*,application/pdf,.doc,.docx" />
+    <input id="chatInput" type="text" class="input-pill" placeholder="Type a message" />
+    <button type="submit" class="icon-btn" title="Send">
+      <i class="fa-solid fa-paper-plane"></i>
+    </button>
+  </form>
+</section>
+
 
       <!-- AGENT EDIT VIEW (WhatsApp-styled) -->
       <!-- ✅ min-h-0 + overflow-y-auto so this pane scrolls too -->
@@ -516,9 +555,25 @@
 
      // Incoming message from client or other agents
   socket.on('chat message', (msg) => {
-    console.log("📩 Incoming message:", msg);
+  const exists = currentMessages.some(
+    m => String(m.id || m._id || m.messageId) === String(msg.id || msg._id || msg.messageId)
+  );
+
+  if (!exists) {
+    console.log("📩 Incoming new message:", msg);
     handleIncomingMessage(msg);
-  });
+  } else {
+    console.log("⚡ Duplicate message ignored:", msg.id);
+  }
+});
+socket.on("messageDeleted", (msgId) => {
+  const msgEl = document.querySelector(`[data-id="${msgId}"]`);
+  if(msgEl) {
+    alert("This message was deleted"); // simple popup
+    msgEl.innerHTML = '<i class="text-gray-400 italic">This message was deleted</i>';
+  }
+});
+
 
   // Typing indicator from client
   socket.on('typing', (data) => {
@@ -526,6 +581,7 @@
     showTypingIndicator(data.phone, data.isTyping);
   });
 
+ 
   // Agent presence updates
   socket.on('agent status', (data) => {
     console.log("👤 Agent status update:", data);
@@ -1005,6 +1061,8 @@ async function setActiveClient(phone) {
     return;
   }
 
+  currentChatId = phone;
+
   const rawPhone = activeClient.id || activeClient.jid || activeClient.number;
   let displayName;
 
@@ -1035,6 +1093,7 @@ async function setActiveClient(phone) {
     if (data.success) {
       // ⬇️ Use data.messages (not data.chats)
       activeClient.messages = data.messages.map(m => ({
+        id: m.id, // 🟢 this is critical for deletion
         text: m.text || m.message || "",
         sender: m.sender || (m.fromMe ? "Admin" : "Client"),
         timestamp: m.timestamp || new Date(),
@@ -1042,12 +1101,17 @@ async function setActiveClient(phone) {
         fileUrl: m.fileUrl || null
       }));
 
+      console.log("✅ Loaded messages with IDs:", activeClient.messages.map(x => x.id));
+
       renderMessages(activeClient.messages);
+    } else {
+      console.error("❌ Failed to load chat:", data.error);
     }
   } catch (e) {
     console.error("setActiveClient error:", e);
   }
 }
+
 
 
 
@@ -1069,11 +1133,12 @@ function pushMessage(phone, msg) {
   // ✅ Normalize message object
   const messageObj = {
     text: msg.text || msg.message || "",
-    sender: msg.sender || "Client",
+    sender: msg.agentName || "Admin" || "Client",
     timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
     isFile: !!msg.isFile,
     fileUrl: msg.fileUrl || ""
-  };
+};
+
 
   if (!client.messages) client.messages = [];
   client.messages.push(messageObj);
@@ -1150,61 +1215,171 @@ function normalizeFileUrl(fileUrl) {
 }
 
 // Updated renderMessages for reliable file rendering
+// Global state variables (add these once near the top of your script)
+// Global state variables (make sure these exist somewhere above)
+// Global state variables
+// ===============================
+// ✅ FRONTEND DELETE LOGIC (FIXED)
+// ===============================
+let selectedMessages = [];
+let selectionMode = false;
+let currentMessages = [];
+let currentChatId = null;
+
+// ✅ Main render function
+// ✅ Safe global initialization
 function renderMessages(messages) {
+  if (!messages) return;
   chatWindow.innerHTML = "";
+  currentMessages = messages;
+
   const messagesToRender = messages.slice(-50);
 
   messagesToRender.forEach((m, idx) => {
+   console.log("🧩 Message object:", m);
+console.log("🧩 Deleted flag:", m.deleted);
+
+
     const wrapper = document.createElement("div");
-    wrapper.className = `flex ${m.sender === "Admin" ? "justify-end" : "justify-start"} my-[2px]`;
+    wrapper.className = `flex ${
+      m.sender === "Admin" ? "justify-end" : "justify-start"
+    } my-[2px]`;
     wrapper.dataset.msgIndex = idx;
 
     const bubble = document.createElement("div");
-    bubble.className = `bubble ${m.sender === "Admin" ? "me" : "them"} shadow p-2 relative`;
+    bubble.className = `bubble ${
+      m.sender === "Admin" ? "me" : "them"
+    } shadow p-2 relative`;
     bubble.dataset.msgIndex = idx;
 
-    // Text
-    const textDiv = document.createElement("div");
-    textDiv.className = "break-words mb-1";
-    textDiv.innerHTML = linkify(m.text);
-    bubble.appendChild(textDiv);
+    // ✅ Always use serialized ID when available
+    const msgId = String(
+      m.id?._serialized ||
+        m._data?.id?._serialized ||
+        m.id ||
+        m.messageId ||
+        m._id ||
+        idx
+    );
 
-    // File handling
-    if (m.isFile && m.fileUrl) {
-      const fileUrl = normalizeFileUrl(m.fileUrl);
+    bubble.dataset.id = msgId;
+    wrapper.dataset.id = msgId;
 
-      if (fileUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
-        const img = document.createElement("img");
-        img.src = fileUrl;
-        img.className = "rounded-md max-w-[240px] max-h-[180px] object-contain border";
-        bubble.appendChild(img);
-      } else if (fileUrl.match(/\.(mp4|webm|ogg)$/i)) {
-        const video = document.createElement("video");
-        video.src = fileUrl;
-        video.controls = true;
-        video.className = "rounded-md max-w-[260px] max-h-[200px]";
-        bubble.appendChild(video);
-      } else {
-        const a = document.createElement("a");
-        a.href = fileUrl;
-        a.target = "_blank";
-        a.textContent = "📎 Download file";
-        a.className = "underline text-blue-400";
-        bubble.appendChild(a);
+    // ✅ Only treat as deleted if backend says so
+       // ✅ Handle deleted messages accurately
+     // ✅ Handle deleted messages accurately
+    const isDeleted =
+      m.deleted === true ||
+      m.type === "revoked" ||
+      m.status === "deleted" ||
+      (!m.text && m.hasMedia === false); // fallback: empty text & no media
+
+    if (isDeleted) {
+      const deletedDiv = document.createElement("div");
+      deletedDiv.className = "italic text-gray-400 text-sm text-center px-2";
+
+      // 🔹 Set proper deleted text based on sender
+      deletedDiv.textContent =
+        m.sender === "Admin"
+          ? "You deleted this message"
+          : "This message was deleted";
+
+      // 🗑️ Optional icon for visual clarity
+      const icon = document.createElement("span");
+      icon.textContent = "🗑️ ";
+      deletedDiv.prepend(icon);
+
+      bubble.innerHTML = ""; // clear any previous text/media
+      bubble.appendChild(deletedDiv);
+    } else {
+      // 📝 Normal message text
+const senderDiv = document.createElement("div");
+senderDiv.className = "text-xs font-semibold mb-1 text-green-400";
+senderDiv.textContent = m.sender || "Unknown";
+bubble.appendChild(senderDiv);
+
+const textDiv = document.createElement("div");
+textDiv.className = "break-words";
+textDiv.innerHTML = linkify(m.text || "");
+bubble.appendChild(textDiv);
+
+
+      // 📎 File preview (if any)
+      if (m.isFile && m.fileUrl) {
+        const fileUrl = normalizeFileUrl(m.fileUrl);
+        if (/\.(jpg|jpeg|png|gif|webp)$/i.test(fileUrl)) {
+          const img = document.createElement("img");
+          img.src = fileUrl;
+          img.className =
+            "rounded-md max-w-[240px] max-h-[180px] object-contain border";
+          bubble.appendChild(img);
+        } else if (/\.(mp4|webm|ogg)$/i.test(fileUrl)) {
+          const video = document.createElement("video");
+          video.src = fileUrl;
+          video.controls = true;
+          video.className = "rounded-md max-w-[260px] max-h-[200px]";
+          bubble.appendChild(video);
+        } else {
+          const a = document.createElement("a");
+          a.href = fileUrl;
+          a.target = "_blank";
+          a.textContent = "📎 Download file";
+          a.className = "underline text-blue-400";
+          bubble.appendChild(a);
+        }
       }
     }
+   
+    // 💬 Selection logic
+    bubble.onclick = () => {
+      if (!selectionMode) return;
+      const id = String(bubble.dataset.id);
+      const index = selectedMessages.indexOf(id);
+      if (index > -1) {
+        selectedMessages.splice(index, 1);
+        bubble.classList.remove("selected");
+      } else {
+        selectedMessages.push(id);
+        bubble.classList.add("selected");
+      }
+      updateToolbar();
+    };
 
-  
+    // 🖱️ Right-click selection mode
+    bubble.oncontextmenu = (e) => {
+      e.preventDefault();
+      selectionMode = true;
+      const id = String(bubble.dataset.id);
+      if (!selectedMessages.includes(id)) {
+        selectedMessages.push(id);
+        bubble.classList.add("selected");
+      }
+      updateToolbar();
+    };
 
-    // Meta info
+    // 📱 Long press (mobile)
+    let pressTimer;
+    bubble.addEventListener("touchstart", () => {
+      pressTimer = setTimeout(() => {
+        selectionMode = true;
+        const id = String(bubble.dataset.id);
+        if (!selectedMessages.includes(id)) {
+          selectedMessages.push(id);
+          bubble.classList.add("selected");
+        }
+        updateToolbar();
+      }, 600);
+    });
+    bubble.addEventListener("touchend", () => clearTimeout(pressTimer));
+
+    // 🕒 Timestamp + ticks (still visible even on deleted)
     const meta = document.createElement("div");
     meta.className = "meta text-xs text-gray-400 mt-1 flex items-center justify-end";
-
     const time = document.createElement("span");
     time.textContent = formatTimestamp(m.timestamp);
     meta.appendChild(time);
 
-    if (m.sender === "Admin") {
+    if (m.sender === "Admin" && !m.deleted) {
       const ticks = document.createElement("i");
       ticks.className = "fa-solid fa-check-double tick ml-1";
       meta.appendChild(ticks);
@@ -1216,6 +1391,171 @@ function renderMessages(messages) {
   });
 
   chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+// ✅ Update Delete Listeners
+function registerDeleteListeners() {
+  if (!socket || typeof socket.on !== "function") return setTimeout(registerDeleteListeners, 300);
+
+  socket.off("messagesDeleted");
+  socket.off("allMessagesDeleted");
+  socket.off("deleteError");
+
+  socket.on("messagesDeleted", ({ chatId, type, messageIds }) => {
+    if (chatId !== currentChatId) return;
+    currentMessages = currentMessages.map(msg => {
+      const msgId = String(msg.id?._serialized || msg._id || msg.messageId || msg.id);
+      if (messageIds.includes(msgId)) return { ...msg, deleted: true };
+      return msg;
+    });
+    renderMessages(currentMessages);
+    updateToolbar();
+  });
+
+  socket.on("allMessagesDeleted", ({ chatId, type }) => {
+    if (chatId !== currentChatId) return;
+    currentMessages = currentMessages.map(msg => ({ ...msg, deleted: true }));
+    selectedMessages = [];
+    selectionMode = false;
+    renderMessages(currentMessages);
+    updateToolbar();
+  });
+
+  socket.on("deleteError", (err) => {
+    console.error("❌ Delete error:", err);
+    alert("Failed to delete: " + (err?.message || "Unknown error"));
+  });
+}
+// ✅ Toolbar update logic
+// ✅ Toolbar update logic
+function updateToolbar() {
+  const toolbar = document.getElementById("deleteToolbar");
+  const countLabel = document.getElementById("selectedCount");
+  if (!toolbar || !countLabel) return;
+  toolbar.style.display = selectedMessages.length > 0 ? "flex" : "none";
+  countLabel.textContent = `${selectedMessages.length} selected`;
+}
+
+
+// ✅ Delete for Everyone
+document.getElementById("deleteSelectedForEveryone").onclick = () => {
+  if (!currentChatId) return alert("Please select a chat first!");
+  if (selectedMessages.length === 0) return alert("No messages selected!");
+  if (!confirm("Delete these messages for everyone?")) return;
+
+  // 🧠 Collect real WhatsApp message IDs from DOM using data-msg-index
+  const ids = selectedMessages.map(sel => {
+    const el = document.querySelector(`[data-msg-index="${sel}"]`);
+    return el?.dataset?.id || String(sel);
+  });
+
+  console.log("🧩 Emitting deleteAllMessages (for everyone):", {
+    chatId: currentChatId,
+    type: "everyone",
+    messageIds: ids,
+  });
+
+  socket.emit("deleteAllMessages", {
+    chatId: currentChatId,
+    type: "everyone",
+    messageIds: ids,
+  });
+
+  selectedMessages = [];
+  selectionMode = false;
+  updateToolbar();
+  renderMessages(currentMessages);
+};
+
+// ✅ Listen for server confirmations safely
+function registerDeleteListeners() {
+  if (!socket || typeof socket.on !== "function") {
+    console.warn("⚠️ Socket not ready yet, retrying delete listeners...");
+    return setTimeout(registerDeleteListeners, 300);
+  }
+
+  socket.off("messagesDeleted");
+  socket.off("allMessagesDeleted");
+  socket.off("deleteError");
+
+  socket.on("messagesDeleted", ({ chatId, type, messageIds }) => {
+  if (chatId !== currentChatId) return;
+  console.log(`🗑️ ${type} delete confirmed for messages:`, messageIds);
+
+  // Instead of removing, mark as deleted
+  currentMessages = currentMessages.map((msg) => {
+    const msgId = String(msg.id);
+    if (messageIds.includes(msgId)) {
+      return { ...msg, deleted: true }; // ✅ mark deleted
+    }
+    return msg;
+  });
+
+  renderMessages(currentMessages);
+  updateToolbar();
+});
+
+
+  socket.on("allMessagesDeleted", ({ chatId, type }) => {
+    if (chatId !== currentChatId) return;
+    console.log(`🧹 All messages deleted (${type})`);
+    currentMessages = [];
+    selectedMessages = [];
+    selectionMode = false;
+    renderMessages(currentMessages);
+    updateToolbar();
+  });
+
+  socket.on("deleteError", (err) => {
+    console.error("❌ Delete error:", err);
+    alert("Failed to delete: " + (err?.message || "Unknown error"));
+  });
+
+  console.log("✅ Delete socket listeners registered successfully");
+}
+
+// ✅ Wait for socket to exist + connect
+function waitForSocketAndInit() {
+  if (typeof socket === "undefined") {
+    console.warn("⚠️ Socket not ready yet, retrying delete listeners...");
+    return setTimeout(waitForSocketAndInit, 500);
+  }
+
+  if (!socket.connected) {
+    console.log("⏳ Waiting for socket connection...");
+    socket.once("connect", () => {
+      console.log("✅ Socket ready — registering delete listeners");
+      registerDeleteListeners();
+    });
+    return;
+  }
+
+  console.log("✅ Socket ready — registering delete listeners");
+  registerDeleteListeners();
+}
+
+// 🔄 Initialize when DOM is ready
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", waitForSocketAndInit);
+} else {
+  waitForSocketAndInit();
+}
+
+// ✅ Helpers
+function formatTimestamp(ts) {
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function normalizeFileUrl(url) {
+  return url.replace(/\\/g, "/");
+}
+
+function linkify(text) {
+  if (!text) return "";
+  return text.replace(
+    /(https?:\/\/[^\s]+)/g,
+    '<a href="$1" target="_blank" class="text-blue-500 underline">$1</a>'
+  );
 }
 
 // Updated handleIncomingMessage for consistent file URLs
@@ -1231,15 +1571,12 @@ function handleIncomingMessage(msg) {
     isFile: !!msg.isFile,
     fileUrl: fileUrl
   };
-
   pushMessage(msg.phone, messageObj);
-
   if (msg.sender === "Client") {
     const sound = document.getElementById("notificationSound");
     sound.play().catch(err => console.log("Audio play blocked:", err));
   }
 }
-
 // Inline Edit
 function inlineEditMessage(idx) {
   const bubble = chatWindow.querySelector(`.bubble[data-msg-index='${idx}']`);
@@ -1253,7 +1590,6 @@ function inlineEditMessage(idx) {
   bubble.insertBefore(textarea, textDiv);
   textDiv.style.display = "none";
   textarea.focus();
-
   const saveEdit = () => {
     const newText = textarea.value.trim();
     if (!newText) return;
@@ -1268,7 +1604,6 @@ function inlineEditMessage(idx) {
       });
     }
   };
-
   textarea.addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -1280,7 +1615,6 @@ function inlineEditMessage(idx) {
 
   textarea.addEventListener("blur", saveEdit);
 }
-
 // Delete message
 function deleteMessage(idx) {
   if (confirm("Delete this message?")) {
@@ -1288,8 +1622,6 @@ function deleteMessage(idx) {
     renderMessages(activeClient.messages);
   }
 }
-
-
 </script>
 </body>
 </html>
